@@ -1,0 +1,5 @@
+data/
+*.bak
+generative_inpainting/
+models/inpainting/release_celeba_hq_256_deepfill_v2/
+models/inpainting/release_places2_256_deepfill_v2/
