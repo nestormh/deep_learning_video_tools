@@ -1,4 +1,35 @@
-# =========================== Basic Settings ===========================
+# =========================== Segmentation Settings ===========================
+download_models_path: "models/segmentation"
+# One of: deeplab_mnv3_large_cityscapes_trainfine, mobilenetv2_coco_voctrainaug, mobilenetv2_coco_voctrainval, xception_coco_voctrainaug, xception_coco_voctrainval
+model_name: 'xception_coco_voctrainval'
+classes_to_remove: [
+#  'background',
+#  'aeroplane',
+#  'bicycle',
+#  'bird',
+#  'boat',
+#  'bottle',
+#  'bus',
+#  'car',
+#  'cat',
+#  'chair',
+#  'cow',
+#  'diningtable',
+#  'dog',
+#  'horse',
+#  'motorbike',
+  'person',
+#  'pottedplant',
+#  'sheep',
+#  'sofa',
+#  'train',
+#  'tv'
+  ]
+
+# =========================== Inpainting Settings ===========================
+# Model settings
+checkpoint_path: 'models/inpainting/release_places2_256_deepfill_v2'
+
 # machine info
 num_gpus_per_job: 1  # number of gpus each job need
 num_cpus_per_job: 4  # number of gpus each job need

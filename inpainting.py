@@ -4,16 +4,15 @@ import argparse
 import cv2
 import numpy as np
 import tensorflow as tf
-import neuralgym.neuralgym as ng
 
 from generative_inpainting.inpaint_model import InpaintCAModel
 
 class GenerativeInpainting:
     GRID_SIZE = 8
 
-    def __init__(self, config_file, checkpoint_dir):
-        self.config = ng.Config(config_file)
-        self.checkpoint_dir = checkpoint_dir
+    def __init__(self, config):
+        self.config = config
+        self.checkpoint_dir = config.checkpoint_path
 
         self.model = InpaintCAModel()
 

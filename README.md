@@ -1,12 +1,8 @@
-# dl_video_tools
+# deep_learning_video_tools
 
 ![tensorflow](https://img.shields.io/badge/tensorflow-v2.2.0-green.svg?style=plastic)
 
 Some tools to modify video content based on well established Deep Learning algorithms for segmentation, inpainting, 3d modelling...
-
-## Notes
-
-Under development (check develop branch for the most recent, still unusable, code).
 
 ## Installation
 
