@@ -1,3 +1,10 @@
+# =========================== Pipeline Settings ===============================
+dilate_mask:
+  apply: true
+  kernel_size: 10
+  type: 'ellipse' # ellipse, rect, cross, bbox
+
+
 # =========================== Segmentation Settings ===========================
 download_models_path: "models/segmentation"
 # One of: deeplab_mnv3_large_cityscapes_trainfine, mobilenetv2_coco_voctrainaug, mobilenetv2_coco_voctrainval, xception_coco_voctrainaug, xception_coco_voctrainval
