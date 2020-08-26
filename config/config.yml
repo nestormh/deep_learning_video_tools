@@ -33,6 +33,34 @@ classes_to_remove: [
 #  'tv'
   ]
 
+background_classes: [
+  'background',
+#  'aeroplane',
+#  'bicycle',
+#  'bird',
+#  'boat',
+#  'bottle',
+#  'bus',
+#  'car',
+#  'cat',
+#  'chair',
+#  'cow',
+#  'diningtable',
+#  'dog',
+#  'horse',
+#  'motorbike',
+#  'person',
+#  'pottedplant',
+#  'sheep',
+#  'sofa',
+#  'train',
+#  'tv'
+]
+
+# =========================== Registration Settings ===========================
+max_images_in_buffer: 20
+num_features: 5000
+
 # =========================== Inpainting Settings ===========================
 # Model settings
 checkpoint_path: 'models/inpainting/release_places2_256_deepfill_v2'
