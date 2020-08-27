@@ -123,4 +123,4 @@ def test2():
     video_out.release()
 
 if __name__ == "__main__":
-    test2()
+    test1()

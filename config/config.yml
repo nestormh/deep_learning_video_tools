@@ -1,7 +1,7 @@
 # =========================== Pipeline Settings ===============================
 dilate_mask:
   apply: true
-  kernel_size: 10
+  kernel_size: 20
   type: 'ellipse' # ellipse, rect, cross, bbox
 
 
@@ -58,8 +58,11 @@ background_classes: [
 ]
 
 # =========================== Registration Settings ===========================
-max_images_in_buffer: 20
+max_images_in_buffer: 750
 num_features: 5000
+
+erode_filled_image_by_px: 1
+dilate_inpainting_mask_by_px: 5
 
 # =========================== Inpainting Settings ===========================
 # Model settings
