@@ -6,11 +6,7 @@ Some tools to modify video content based on well established Deep Learning algor
 
 Still work in progress, but some preliminary results available:
 
-Original video
-
-[![IMAGE ALT TEXT](http://img.youtube.com/vi/3FXUw98rrUY/0.jpg)](http://www.youtube.com/watch?v=3FXUw98rrUY" "Original video")
-
-Preliminary results of object removal
+**Preliminary results of object removal ([original video](http://img.youtube.com/vi/3FXUw98rrUY/0.jpg))** 
 
 [![IMAGE ALT TEXT](http://img.youtube.com/vi/JlLbS8DpMwE/0.jpg)](http://www.youtube.com/watch?v=JlLbS8DpMwE" "Inpainted video")
 
