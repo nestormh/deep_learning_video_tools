@@ -1,6 +1,7 @@
 import tools
 import cv2
 import numpy as np
+import random
 
 class ImageItem:
     def __init__(self, image=None, mask=None, bg_mask = None, filled=None, inpainted=None):
@@ -9,7 +10,8 @@ class ImageItem:
         self.bg_mask = bg_mask
         self.filled = filled
         self.inpainted = inpainted
-        self.final_mask = mask
+        self.used_mask = np.zeros(mask.shape, np.uint8) if np.any(mask) else None
+        self.inpaint_mask = cv2.bitwise_not(mask) if np.any(mask) else None
         self.final_image = image
 
         self.warped = None
@@ -119,30 +121,62 @@ class ImageRegistration:
             kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (config.erode_filled_image_by_px, config.erode_filled_image_by_px))
             mask = cv2.erode(orig_mask, kernel, iterations=1)
             ret, mask = cv2.threshold(mask, 1, 255, cv2.THRESH_BINARY)
+            mask = cv2.bitwise_and(mask, lastItem.mask)
+            # We don't want to use again data we already have
+            mask = cv2.bitwise_and(mask, cv2.bitwise_not(lastItem.used_mask))
+
+            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (config.dilate_inpainting_mask_by_px, config.dilate_inpainting_mask_by_px))
+            inpaint_mask = cv2.erode(mask, kernel, cv2.BORDER_CONSTANT, iterations=1)
+            lastItem.inpaint_mask = cv2.bitwise_or(lastItem.inpaint_mask, inpaint_mask)
+
+            # tools.draw_image_on_plt(orig_mask, "orig_mask")
+            # tools.draw_image_on_plt(lastItem.mask, "lastItem.mask")
+            # tools.draw_image_on_plt(item.warped.mask, "item.warped.mask")
+            # tools.draw_image_on_plt(mask, "mask")
+            # tools.draw_image_on_plt(lastItem.mask - mask, "diff")
 
             warped = cv2.bitwise_and(item.warped.image, mask)
             neg = cv2.bitwise_and(lastItem.final_image, cv2.bitwise_not(mask))
-            dst = cv2.max(neg, warped)
+            # dst = cv2.max(neg, warped)
+            lastItem.final_image = cv2.max(neg, warped)
 
-            lastItem.final_mask = cv2.bitwise_and(cv2.bitwise_or(lastItem.final_mask, orig_mask), cv2.bitwise_not(mask))
-            lastItem.final_image = cv2.bitwise_and(dst, cv2.bitwise_not(lastItem.final_mask))
+            # tools.draw_image_on_plt(dst, "dst")
 
-        # tools.draw_image_on_plt(lastItem.final_mask, "lastItem.final_mask")
-        # tools.draw_image_on_plt(lastItem.final_image, "lastItem.final_image")
+            # lastItem.final_mask = cv2.bitwise_and(cv2.bitwise_or(lastItem.final_mask, orig_mask), mask)
+            colormask = np.zeros(lastItem.image.shape, np.uint8)
+            colormask[:, :] = (random.randint(128, 255), random.randint(128, 255), random.randint(128, 255))
+            colormask = cv2.bitwise_and(colormask, mask)
+            # lastItem.final_mask = cv2.bitwise_or(lastItem.final_mask, colormask)
+            lastItem.used_mask += mask
+            # lastItem.final_image = cv2.bitwise_and(dst, cv2.bitwise_not(lastItem.final_mask))
+
+
+            # tools.draw_image_on_plt(lastItem.used_mask, "lastItem.final_mask")
+            # tools.draw_image_on_plt(lastItem.final_image, "lastItem.final_image")
+            # tools.draw_image_on_plt(lastItem.inpaint_mask, "lastItem.inpaint_mask")
+
+        # tools.draw_image_on_plt(lastItem.used_mask, "lastItem.final_mask (final)")
+        # tools.draw_image_on_plt(lastItem.final_image, "lastItem.final_image (final)")
+        # tools.draw_image_on_plt(lastItem.inpaint_mask, "lastItem.inpaint_mask (final)")
+
+        # return lastItem.final_image
 
         # TODO: Repeat, this time using older inpainted images for keeping as much consistency as possible
 
         from inpainting import GenerativeInpainting
         inpainting = GenerativeInpainting(config)
 
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (config.dilate_inpainting_mask_by_px, config.dilate_inpainting_mask_by_px))
-        mask_inpaint = cv2.dilate(lastItem.final_mask, kernel, cv2.BORDER_CONSTANT, iterations=1)
-        # tools.draw_image_on_plt(mask_inpaint, "mask_inpaint")
-        _, mask_inpaint = cv2.threshold(mask_inpaint, 1, 255, cv2.THRESH_BINARY)
-        # tools.draw_image_on_plt(mask_inpaint, "mask_inpaint")
+        # kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (config.dilate_inpainting_mask_by_px, config.dilate_inpainting_mask_by_px))
+        # mask_inpaint = cv2.dilate(lastItem.final_mask, kernel, cv2.BORDER_CONSTANT, iterations=1)
+        # # tools.draw_image_on_plt(mask_inpaint, "mask_inpaint")
+        # _, mask_inpaint = cv2.threshold(mask_inpaint, 1, 255, cv2.THRESH_BINARY)
+        lastItem.inpaint_mask = cv2.bitwise_not(lastItem.inpaint_mask)
+        # tools.draw_image_on_plt(lastItem.inpaint_mask, "mask_inpaint")
 
 
-        inpainted = inpainting.inpaint_image(lastItem.final_image, mask_inpaint)
+        inpainted = inpainting.inpaint_image(lastItem.final_image, lastItem.inpaint_mask)
+
+
         # tools.draw_image_on_plt(inpainted, "inpainted")
         #
         # compare_inpainted = inpainting.inpaint_image(lastItem.image, lastItem.mask)
@@ -171,6 +205,10 @@ class ImageRegistration:
             # self.generateMask(lastItem)
         else:
             self.initializeLastItem(lastItem)
+
+        # lastItem.image = np.zeros(lastItem.image.shape, np.uint8)
+        # import random
+        # lastItem.image[:, :] = (random.randint(128, 255), random.randint(128, 255), random.randint(128, 255))
 
         self.buffer.insert(0, lastItem)
         if len(self.buffer) > self.config.max_images_in_buffer:
@@ -224,6 +262,12 @@ if __name__ == "__main__":
     while (video_in.isOpened()):
         ret, frame = video_in.read()
 
+        # if count % 5 != 0:
+        #     count += 1
+        #     continue
+        # count += 1
+
+
         resized_image, seg_map = segmentation.run(frame)
         mask = labels.mask_from_labels(seg_map, config.classes_to_remove)
         bg_mask = labels.mask_from_labels(seg_map, config.background_classes)
@@ -247,13 +291,16 @@ if __name__ == "__main__":
         new_frame = registration.updateBuffer(resized_image, mask, bg_mask)
         resized_new_frame = cv2.resize(new_frame, (frame_width, frame_height), interpolation=cv2.INTER_CUBIC)
 
+        # if count == 2:
+        #     break
+
         if not video_out:
             # Define the codec and create VideoWriter object
             fourcc = cv2.VideoWriter_fourcc(*'MJPG')
-            video_out = cv2.VideoWriter(f'data/wo_people_walking_registration.avi', fourcc, fps, (frame_width, frame_height))
+            video_out = cv2.VideoWriter(f'data/wo_people_walking_registration_fixed.avi', fourcc, fps, (frame_width, frame_height))
 
         video_out.write(resized_new_frame)
 
     video_in.release()
-    video_out.release()
+    # video_out.release()
 
