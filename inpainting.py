@@ -4,8 +4,10 @@ import argparse
 import cv2
 import numpy as np
 import tensorflow as tf
+tf.compat.v1.disable_eager_execution()
 
 from generative_inpainting.inpaint_model import InpaintCAModel
+from timeit import default_timer as timer
 
 class GenerativeInpainting:
     GRID_SIZE = 8
@@ -17,26 +19,46 @@ class GenerativeInpainting:
         self.model = InpaintCAModel()
 
         self.sess_config = tf.compat.v1.ConfigProto()
+        # TODO: Check
         self.sess_config.gpu_options.allow_growth = True
+        self.sess_config.allow_soft_placement = True
+        self.sess_config.log_device_placement = False
+
+        self.sess = None
+        self.output = None
+        self.input_image_placeholder = None
+
+        from pprint import pprint
+        pprint(self.sess_config)
 
     def inpaint_image(self, image, mask):
         assert image.shape == mask.shape
 
+        start_time = timer()
+
         h, w, _ = image.shape
-        image = image[:h//self.GRID_SIZE*self.GRID_SIZE, :w//self.GRID_SIZE*self.GRID_SIZE, :]
-        mask = mask[:h//self.GRID_SIZE*self.GRID_SIZE, :w//self.GRID_SIZE*self.GRID_SIZE, :]
+        image_width = w//self.GRID_SIZE*self.GRID_SIZE
+        image_height = h//self.GRID_SIZE*self.GRID_SIZE
+
+        image = image[:image_height, :image_width, :]
+        mask = mask[:image_height, :image_width, :]
         print(f'Shape of image: {image.shape}')
 
         image = np.expand_dims(image, 0)
         mask = np.expand_dims(mask, 0)
         input_image = np.concatenate([image, mask], axis=2)
 
-        with tf.compat.v1.Session(config=self.sess_config) as sess:
-            input_image = tf.constant(input_image, dtype=tf.float32)
-            output = self.model.build_server_graph(self.config, input_image)
-            output = (output + 1.) * 127.5
-            output = tf.reverse(output, [-1])
-            output = tf.saturate_cast(output, tf.uint8)
+        if not self.sess:
+            self.sess = tf.compat.v1.Session(config=self.sess_config)
+
+            self.input_image_placeholder = tf.compat.v1.placeholder(
+                tf.float32, shape=(1, image_height, image_width * 2, 3))
+
+            self.output = self.model.build_server_graph(self.config, self.input_image_placeholder)
+            self.output = (self.output + 1.) * 127.5
+            self.output = tf.reverse(self.output, [-1])
+            self.output = tf.saturate_cast(self.output, tf.uint8)
+
             # load pretrained model
             vars_list = tf.compat.v1.get_collection(tf.compat.v1.GraphKeys.GLOBAL_VARIABLES)
 
@@ -56,11 +78,13 @@ class GenerativeInpainting:
 
                 assign_ops.append(tf.compat.v1.assign(var, var_value))
 
-            sess.run(assign_ops)
+            self.sess.run(assign_ops)
 
             print('Model loaded.')
-            result = sess.run(output)
 
-            result = result[0][:, :, ::-1]
+        result = self.sess.run(self.output, feed_dict={self.input_image_placeholder: input_image})
+        result = result[0][:, :, ::-1]
 
-            return result
+        print(f"Inpainting time: {timer() - start_time}")
+
+        return result

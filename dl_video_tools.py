@@ -5,6 +5,7 @@ import neuralgym.neuralgym as ng
 import cv2
 import labels
 
+# Just inpainting, no registration
 def test1():
     # TODO: Pass as parameter
     config_file = "config/config.yml"
@@ -23,7 +24,13 @@ def test1():
 
     count = 0
     while (video_in.isOpened()):
+        print(f"==== Processiong image {count} ====")
+        count += 1
+
         ret, frame = video_in.read()
+
+        if not ret:
+            break
 
         resized_image, seg_map = segmentation.run(frame)
         mask = labels.mask_from_labels(seg_map, config.classes_to_remove)
@@ -50,13 +57,14 @@ def test1():
         if not video_out:
             # Define the codec and create VideoWriter object
             fourcc = cv2.VideoWriter_fourcc(*'MJPG')
-            video_out = cv2.VideoWriter(f'data/wo_people_walking.avi', fourcc, fps, (frame_width, frame_height))
+            video_out = cv2.VideoWriter(f'data/wo_people_walking_no_registration.avi', fourcc, fps, (frame_width, frame_height))
 
         video_out.write(resized_new_frame)
 
     video_in.release()
     video_out.release()
 
+# Inpainting + registration
 def test2():
     # TODO: Pass as parameter
     config_file = "config/config.yml"
