@@ -3,6 +3,7 @@ import cv2
 import numpy as np
 import random
 import time
+from timeit import default_timer as timer
 
 class ImageItem:
     def __init__(self, image=None, mask=None, bg_mask = None, filled=None, inpainted=None):
@@ -28,206 +29,104 @@ class ImageRegistration:
 
         self.buffer = []
 
+        self.inpainting = GenerativeInpainting(config)
+
+        self.matcher = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
+        FLANN_INDEX_LSH = 6
+        index_params = dict(algorithm=FLANN_INDEX_LSH,
+                            table_number=6,  # 12
+                            key_size=12,  # 20
+                            multi_probe_level=1)  # 2
+        search_params = dict(checks=50)
+
+        self.flann = cv2.FlannBasedMatcher(index_params, search_params)
+
+
     def initializeLastItem(self, lastItem):
         img_gray = cv2.cvtColor(lastItem.image, cv2.COLOR_BGR2GRAY)
         bg_mask = cv2.cvtColor(lastItem.bg_mask, cv2.COLOR_BGR2GRAY)
 
         lastItem.keypoints, lastItem.descriptors = self.orb_detector.detectAndCompute(img_gray, bg_mask)
 
-        # im_with_keypoints = cv2.drawKeypoints(img_gray,
-        #                   lastItem.keypoints,
-        #                   np.array([]),
-        #                   (0, 0, 255),
-        #                   cv2.DRAW_MATCHES_FLAGS_DEFAULT)
-        #
-        # tools.draw_image_on_plt(im_with_keypoints, "im_with_keypoints")
+    def warpImages(self, item, lastItem, width, height):
+        matches = self.flann.knnMatch(lastItem.descriptors, item.descriptors, k=2)
 
-    def computeTransformations(self, lastItem):
-        print("COMPUTING...")
-        self.initializeLastItem(lastItem)
+        # Need to draw only good matches, so create a mask
+        matchesMask = [[0, 0] for i in range(len(matches))]
 
-        self.matcher = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
-        # TODO: For warping, iterate in reverse order to get more static scenes among frames
-        for idx, item in enumerate(reversed(self.buffer)):
-            # if idx != 9:
-            #     continue
+        # ratio test as per Lowe's paper
+        good = []
+        for i, (m, n) in enumerate(matches):
+            if m.distance < 0.7 * n.distance:
+                matchesMask[i] = [1, 0]
+                good.append(m)
 
-            item.warped = ImageItem()
-
-            height, width = item.image.shape[:-1]
-
-            FLANN_INDEX_LSH = 6
-            index_params = dict(algorithm=FLANN_INDEX_LSH,
-                                table_number=6,  # 12
-                                key_size=12,  # 20
-                                multi_probe_level=1)  # 2
-            search_params = dict(checks=50)
-
-            flann = cv2.FlannBasedMatcher(index_params, search_params)
-            # print(lastItem.descriptors)
-            # print(item.descriptors)
-
-            matches = flann.knnMatch(lastItem.descriptors, item.descriptors, k=2)
-
-            # Need to draw only good matches, so create a mask
-            matchesMask = [[0, 0] for i in range(len(matches))]
-
-            # ratio test as per Lowe's paper
-            good = []
-            for i, (m, n) in enumerate(matches):
-                if m.distance < 0.7 * n.distance:
-                    matchesMask[i] = [1, 0]
-                    good.append(m)
-
-            draw_params = dict(matchColor=(0, 255, 0),
-                               singlePointColor=(255, 0, 0),
-                               matchesMask=matchesMask,
-                               flags=0)
-
-            # img_with_matches = cv2.drawMatchesKnn(
-            #     cv2.cvtColor(lastItem.image, cv2.COLOR_BGR2GRAY),
-            #     lastItem.keypoints,
-            #     cv2.cvtColor(item.image, cv2.COLOR_BGR2GRAY),
-            #     item.keypoints,
-            #     matches,
-            #     None, **draw_params)
-
-            # tools.draw_image_on_plt(img_with_matches, "img_with_matches")
-
-            # TODO: Do not continue if there are not enough points. Clear the remaining images from the buffer in this case
-            # if len(good)>MIN_MATCH_COUNT:
+        src_pts = []
+        dst_pts = []
+        if len(good) > self.config.min_match_count:
             src_pts = np.float32([lastItem.keypoints[m.queryIdx].pt for m in good]).reshape(-1, 1, 2)
             dst_pts = np.float32([item.keypoints[m.trainIdx].pt for m in good]).reshape(-1, 1, 2)
 
-            # last_points = np.zeros((len(matches), 2))
-            # item_points = np.zeros((len(matches), 2))
-            #
-            # for i in range(len(matches)):
-            #     print(matches[i])
-            #     last_points[i, :] = lastItem.keypoints[matches[i].queryIdx].pt
-            #     item_points[i, :] = item.keypoints[matches[i].trainIdx].pt
-
-            # TODO: Again, do not continue if there are not enough points. Clear the remaining images from the buffer in this case
-            # if len(good)>MIN_MATCH_COUNT:
+        if len(src_pts) > self.config.min_match_count:
             item.homography, mask_pairs = cv2.findHomography(dst_pts, src_pts, cv2.RANSAC)
 
-            item.warped.image = cv2.warpPerspective(src=item.image,
-                                                    M=item.homography,
-                                                    dsize=(width, height),
-                                                    flags=cv2.INTER_CUBIC)
-            item.warped.mask = cv2.warpPerspective(src=item.mask,
-                                                    M=item.homography,
-                                                    dsize=(width, height),
-                                                    flags=cv2.INTER_CUBIC)
+        item.warped.image = cv2.warpPerspective(src=item.image,
+                                                M=item.homography,
+                                                dsize=(width, height),
+                                                flags=cv2.INTER_CUBIC)
+        item.warped.mask = cv2.warpPerspective(src=item.mask,
+                                               M=item.homography,
+                                               dsize=(width, height),
+                                               flags=cv2.INTER_CUBIC)
 
-            orig_mask = lastItem.mask - item.warped.mask
-            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (config.erode_filled_image_by_px, config.erode_filled_image_by_px))
-            mask = cv2.erode(orig_mask, kernel, iterations=1)
-            ret, mask = cv2.threshold(mask, 1, 255, cv2.THRESH_BINARY)
-            mask = cv2.bitwise_and(mask, lastItem.mask)
-            # We don't want to use again data we already have
-            mask = cv2.bitwise_and(mask, cv2.bitwise_not(lastItem.used_mask))
+    def fillImages(self, item, lastItem):
+        orig_mask = lastItem.mask - item.warped.mask
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (config.erode_filled_image_by_px, config.erode_filled_image_by_px))
+        mask = cv2.erode(orig_mask, kernel, iterations=1)
+        ret, mask = cv2.threshold(mask, 1, 255, cv2.THRESH_BINARY)
+        mask = cv2.bitwise_and(mask, lastItem.mask)
+        # We don't want to use again data we already have
+        mask = cv2.bitwise_and(mask, cv2.bitwise_not(lastItem.used_mask))
 
-            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (config.dilate_inpainting_mask_by_px, config.dilate_inpainting_mask_by_px))
-            inpaint_mask = cv2.erode(mask, kernel, cv2.BORDER_CONSTANT, iterations=1)
-            lastItem.inpaint_mask = cv2.bitwise_or(lastItem.inpaint_mask, inpaint_mask)
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (config.dilate_inpainting_mask_by_px, config.dilate_inpainting_mask_by_px))
+        inpaint_mask = cv2.erode(mask, kernel, cv2.BORDER_CONSTANT, iterations=1)
+        lastItem.inpaint_mask = cv2.bitwise_or(lastItem.inpaint_mask, inpaint_mask)
 
-            # tools.draw_image_on_plt(orig_mask, "orig_mask")
-            # tools.draw_image_on_plt(lastItem.mask, "lastItem.mask")
-            # tools.draw_image_on_plt(item.warped.mask, "item.warped.mask")
-            # tools.draw_image_on_plt(mask, "mask")
-            # tools.draw_image_on_plt(lastItem.mask - mask, "diff")
+        warped = cv2.bitwise_and(item.warped.image, mask)
+        neg = cv2.bitwise_and(lastItem.final_image, cv2.bitwise_not(mask))
+        lastItem.final_image = cv2.max(neg, warped)
 
-            warped = cv2.bitwise_and(item.warped.image, mask)
-            neg = cv2.bitwise_and(lastItem.final_image, cv2.bitwise_not(mask))
-            # dst = cv2.max(neg, warped)
-            lastItem.final_image = cv2.max(neg, warped)
+        colormask = np.zeros(lastItem.image.shape, np.uint8)
+        colormask[:, :] = (random.randint(128, 255), random.randint(128, 255), random.randint(128, 255))
+        lastItem.used_mask += mask
 
-            # tools.draw_image_on_plt(dst, "dst")
+    def fillFrame(self, lastItem):
+        start_time = timer()
+        print("COMPUTING...")
+        self.initializeLastItem(lastItem)
 
-            # lastItem.final_mask = cv2.bitwise_and(cv2.bitwise_or(lastItem.final_mask, orig_mask), mask)
-            colormask = np.zeros(lastItem.image.shape, np.uint8)
-            colormask[:, :] = (random.randint(128, 255), random.randint(128, 255), random.randint(128, 255))
-            colormask = cv2.bitwise_and(colormask, mask)
-            # lastItem.final_mask = cv2.bitwise_or(lastItem.final_mask, colormask)
-            lastItem.used_mask += mask
-            # lastItem.final_image = cv2.bitwise_and(dst, cv2.bitwise_not(lastItem.final_mask))
+        step = self.config.registration_step
+        if len(self.buffer) / step < self.config.min_images_to_process:
+            step = max(int(len(self.buffer) / self.config.min_images_to_process), 1)
+
+        for idx in range(len(self.buffer) - 1, 0, -step):
+            print(f"idx: {idx}")
+
+            item = self.buffer[idx]
+            item.warped = ImageItem()
+            height, width = item.image.shape[:-1]
+
+            self.warpImages(item, lastItem, width, height)
+
+            self.fillImages(item, lastItem)
 
         lastItem.inpaint_mask = cv2.bitwise_not(lastItem.inpaint_mask)
 
-        # tools.draw_image_on_plt(lastItem.used_mask, "lastItem.final_mask (before inpaint)")
-        # tools.draw_image_on_plt(lastItem.final_image, "lastItem.final_image (before inpaint)")
-        # tools.draw_image_on_plt(lastItem.inpaint_mask, "lastItem.inpaint_mask (before inpaint)")
+        # Repeat the process, this time using older inpainted images for keeping as much consistency as possible
 
-        # TODO: For warping, iterate in reverse order to get more static scenes among frames
-        # for idx, item in enumerate(reversed(self.buffer)):
-        if len(self.buffer) > 0:
-            idx = len(self.buffer) - 1
-            item = self.buffer[-1]
-
-            print(idx)
-            # if idx != 9:
-            #     continue
-
-            # height, width = item.image.shape[:-1]
-            #
-            # FLANN_INDEX_LSH = 6
-            # index_params = dict(algorithm=FLANN_INDEX_LSH,
-            #                     table_number=6,  # 12
-            #                     key_size=12,  # 20
-            #                     multi_probe_level=1)  # 2
-            # search_params = dict(checks=50)
-            #
-            # flann = cv2.FlannBasedMatcher(index_params, search_params)
-            # # print(lastItem.descriptors)
-            # # print(item.descriptors)
-            #
-            # matches = flann.knnMatch(lastItem.descriptors, item.descriptors, k=2)
-            #
-            # # Need to draw only good matches, so create a mask
-            # matchesMask = [[0, 0] for i in range(len(matches))]
-            #
-            # # ratio test as per Lowe's paper
-            # good = []
-            # for i, (m, n) in enumerate(matches):
-            #     if m.distance < 0.7 * n.distance:
-            #         matchesMask[i] = [1, 0]
-            #         good.append(m)
-            #
-            # draw_params = dict(matchColor=(0, 255, 0),
-            #                    singlePointColor=(255, 0, 0),
-            #                    matchesMask=matchesMask,
-            #                    flags=0)
-            #
-            # # img_with_matches = cv2.drawMatchesKnn(
-            # #     cv2.cvtColor(lastItem.image, cv2.COLOR_BGR2GRAY),
-            # #     lastItem.keypoints,
-            # #     cv2.cvtColor(item.image, cv2.COLOR_BGR2GRAY),
-            # #     item.keypoints,
-            # #     matches,
-            # #     None, **draw_params)
-            #
-            # # tools.draw_image_on_plt(img_with_matches, "img_with_matches")
-            #
-            # # TODO: Do not continue if there are not enough points. Clear the remaining images from the buffer in this case
-            # # if len(good)>MIN_MATCH_COUNT:
-            # src_pts = np.float32([lastItem.keypoints[m.queryIdx].pt for m in good]).reshape(-1, 1, 2)
-            # dst_pts = np.float32([item.keypoints[m.trainIdx].pt for m in good]).reshape(-1, 1, 2)
-            #
-            # # last_points = np.zeros((len(matches), 2))
-            # # item_points = np.zeros((len(matches), 2))
-            # #
-            # # for i in range(len(matches)):
-            # #     print(matches[i])
-            # #     last_points[i, :] = lastItem.keypoints[matches[i].queryIdx].pt
-            # #     item_points[i, :] = item.keypoints[matches[i].trainIdx].pt
-            #
-            # # TODO: Again, do not continue if there are not enough points. Clear the remaining images from the buffer in this case
-            # # if len(good)>MIN_MATCH_COUNT:
-            # homography, mask_pairs = cv2.findHomography(dst_pts, src_pts, cv2.RANSAC)
-
-            # item.inpainted = np.zeros(lastItem.image.shape, np.uint8)
-            # item.inpainted[:, :] = (random.randint(128, 255), random.randint(128, 255), random.randint(128, 255))
+        for idx in range(len(self.buffer) - 1, 0, -step):
+            print(f"idx: {idx}")
+            item = self.buffer[idx]
 
             height, width = item.image.shape[:-1]
 
@@ -235,8 +134,6 @@ class ImageRegistration:
                                                     M=item.homography,
                                                     dsize=(width, height),
                                                     flags=cv2.INTER_CUBIC)
-
-            # tools.draw_image_on_plt(item.warped.inpainted, "item.warped.inpainted")
 
             orig_mask = item.inpaint_mask - lastItem.used_mask
             kernel = cv2.getStructuringElement(cv2.MORPH_RECT,
@@ -250,91 +147,34 @@ class ImageRegistration:
             kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (
             config.dilate_inpainting_mask_by_px, config.dilate_inpainting_mask_by_px))
             inpaint_mask = cv2.erode(mask, kernel, cv2.BORDER_CONSTANT, iterations=1)
-            # lastItem.inpaint_mask = cv2.bitwise_or(lastItem.inpaint_mask, inpaint_mask)
             lastItem.inpaint_mask = cv2.bitwise_and(lastItem.inpaint_mask, cv2.bitwise_not(inpaint_mask))
-
-            # tools.draw_image_on_plt(orig_mask, "orig_mask")
-            # tools.draw_image_on_plt(mask, "mask")
-            # tools.draw_image_on_plt(lastItem.inpaint_mask, "lastItem.inpaint_mask")
-            # tools.draw_image_on_plt(inpaint_mask, "inpaint_mask")
 
             warped = cv2.bitwise_and(item.warped.inpainted, mask)
             neg = cv2.bitwise_and(lastItem.final_image, cv2.bitwise_not(mask))
             lastItem.final_image = cv2.max(neg, warped)
 
-            # tools.draw_image_on_plt(lastItem.final_image, "final_image_with_inpainted")
-            # tools.draw_image_on_plt(dst, "dst")
-
-            # lastItem.final_mask = cv2.bitwise_and(cv2.bitwise_or(lastItem.final_mask, orig_mask), mask)
             colormask = np.zeros(lastItem.image.shape, np.uint8)
             colormask[:, :] = (random.randint(128, 255), random.randint(128, 255), random.randint(128, 255))
-            colormask = cv2.bitwise_and(colormask, mask)
-            # lastItem.final_mask = cv2.bitwise_or(lastItem.final_mask, colormask)
             lastItem.used_mask += mask
-            # lastItem.final_image = cv2.bitwise_and(dst, cv2.bitwise_not(lastItem.final_mask))
 
-            # tools.draw_image_on_plt(lastItem.used_mask, "lastItem.final_mask")
-            # tools.draw_image_on_plt(lastItem.final_image, "lastItem.final_image")
-            # tools.draw_image_on_plt(lastItem.inpaint_mask, "lastItem.inpaint_mask")
-
-        # if len(self.buffer) > 2:
-        #     tools.draw_image_on_plt(lastItem.used_mask, "lastItem.final_mask (final)")
-        #     tools.draw_image_on_plt(lastItem.final_image, "lastItem.final_image (final)")
-        #     tools.draw_image_on_plt(lastItem.inpaint_mask, "lastItem.inpaint_mask (final)")
-
+        # TODO: Inpainting is external?
         # return lastItem.final_image
 
-        # TODO: Repeat, this time using older inpainted images for keeping as much consistency as possible
+        print(f"Registration time: {timer() - start_time}")
 
-        from inpainting import GenerativeInpainting
-        inpainting = GenerativeInpainting(config)
+        lastItem.inpainted = self.inpainting.inpaint_image(lastItem.final_image, lastItem.inpaint_mask)
 
-        # kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (config.dilate_inpainting_mask_by_px, config.dilate_inpainting_mask_by_px))
-        # mask_inpaint = cv2.dilate(lastItem.final_mask, kernel, cv2.BORDER_CONSTANT, iterations=1)
-        # # tools.draw_image_on_plt(mask_inpaint, "mask_inpaint")
-        # _, mask_inpaint = cv2.threshold(mask_inpaint, 1, 255, cv2.THRESH_BINARY)
-        # lastItem.inpaint_mask = cv2.bitwise_not(lastItem.inpaint_mask)
-
-
-        lastItem.inpainted = inpainting.inpaint_image(lastItem.final_image, lastItem.inpaint_mask)
-
-        # tools.draw_image_on_plt(lastItem.inpaint_mask, "mask_inpaint")
-        # tools.draw_image_on_plt(lastItem.inpainted, "inpainted")
-        # exit(0)
-
-        # if len(self.buffer) > 2:
-        #     exit(0)
-        #
-        # compare_inpainted = inpainting.inpaint_image(lastItem.image, lastItem.mask)
-        # tools.draw_image_on_plt(lastItem.mask, "lastItem.mask")
-        # tools.draw_image_on_plt(compare_inpainted, "compare_inpainted")
 
         return lastItem.inpainted
-
-    def fillImage(self, lastItem):
-        print(lastItem)
-
-    def fillImageWithInpainted(self, lastItem):
-        print(lastItem)
-
-    def generateMask(self, lastItem):
-        print(lastItem)
 
     def updateBuffer(self, image, mask, bg_mask):
         lastItem = ImageItem(image, mask, bg_mask)
 
         return_img = image
         if len(self.buffer) > -1:
-            return_img = self.computeTransformations(lastItem)
-            # self.fillImage(lastItem)
-            # self.fillImageWithInpainted(lastItem)
-            # self.generateMask(lastItem)
+            return_img = self.fillFrame(lastItem)
         else:
             self.initializeLastItem(lastItem)
-
-        # lastItem.image = np.zeros(lastItem.image.shape, np.uint8)
-        # import random
-        # lastItem.image[:, :] = (random.randint(128, 255), random.randint(128, 255), random.randint(128, 255))
 
         self.buffer.insert(0, lastItem)
         if len(self.buffer) > self.config.max_images_in_buffer:
@@ -387,6 +227,8 @@ if __name__ == "__main__":
     count = 0
     while (video_in.isOpened()):
         ret, frame = video_in.read()
+
+        print(f"Processing frame: {count}")
 
         # if count % 10 != 0:
         #     count += 1

@@ -58,8 +58,12 @@ background_classes: [
 ]
 
 # =========================== Registration Settings ===========================
-max_images_in_buffer: 50 #750
+max_images_in_buffer: 90 #750
+registration_step: 30
+min_images_to_process: 3
 num_features: 5000
+
+min_match_count: 10
 
 erode_filled_image_by_px: 3
 dilate_inpainting_mask_by_px: 1 # 3
