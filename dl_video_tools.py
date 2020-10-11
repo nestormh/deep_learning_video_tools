@@ -24,7 +24,7 @@ def test1():
 
     count = 0
     while (video_in.isOpened()):
-        print(f"==== Processiong image {count} ====")
+        print(f"==== Processing image {count} ====")
         count += 1
 
         ret, frame = video_in.read()
@@ -84,7 +84,13 @@ def test2():
 
     count = 0
     while (video_in.isOpened()):
+        print(f"==== Processing image {count} ====")
+        count += 1
+
         ret, frame = video_in.read()
+
+        if not ret:
+            break
 
         resized_image, seg_map = segmentation.run(frame)
         mask = labels.mask_from_labels(seg_map, config.classes_to_remove)
@@ -95,40 +101,31 @@ def test2():
                 kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE,
                                                    (config.dilate_mask.kernel_size, config.dilate_mask.kernel_size))
                 mask = cv2.dilate(mask, kernel, iterations=1)
-                bg_mask = cv2.erode(bg_mask, kernel, iterations=1)
             elif config.dilate_mask.type == "rect":
                 kernel = cv2.getStructuringElement(cv2.MORPH_RECT,
                                                    (config.dilate_mask.kernel_size, config.dilate_mask.kernel_size))
                 mask = cv2.dilate(mask, kernel, iterations=1)
-                bg_mask = cv2.erode(bg_mask, kernel, iterations=1)
             elif config.dilate_mask.type == "cross":
                 kernel = cv2.getStructuringElement(cv2.MORPH_CROSS,
                                                    (config.dilate_mask.kernel_size, config.dilate_mask.kernel_size))
                 mask = cv2.dilate(mask, kernel, iterations=1)
-                bg_mask = cv2.erode(bg_mask, kernel, iterations=1)
             else:
                 raise Exception("Unsupported dilation type. Exiting...")
 
-        # registration.updateBuffer(resized_image, mask)
+        new_frame = registration.updateBuffer(resized_image, mask, bg_mask)
+        resized_new_frame = cv2.resize(new_frame, (frame_width, frame_height), interpolation=cv2.INTER_CUBIC)
 
-        new_frame = inpainting.inpaint_image(resized_image, mask)
+        if not video_out:
+            # Define the codec and create VideoWriter object
+            fourcc = cv2.VideoWriter_fourcc(*'MJPG')
+            video_out = cv2.VideoWriter(f'data/wo_people_walking_registration.avi', fourcc, fps,
+                                        (frame_width, frame_height))
 
-        cv2.imwrite(f"data/buffer/image_{count}.png", resized_image)
-        cv2.imwrite(f"data/buffer/mask_{count}.png", mask)
-        cv2.imwrite(f"data/buffer/bg_mask_{count}.png", bg_mask)
-        cv2.imwrite(f"data/buffer/inpainting_{count}.png", new_frame)
-        count += 1
-        #
-        # if not video_out:
-        #     # Define the codec and create VideoWriter object
-        #     fourcc = cv2.VideoWriter_fourcc(*'MJPG')
-        #     video_out = cv2.VideoWriter(f'data/wo_people_walking.avi', fourcc, fps, (frame_width, frame_height))
-        #
-        # resized_new_frame = cv2.resize(new_frame, (frame_width, frame_height), interpolation=cv2.INTER_CUBIC)
-        # video_out.write(resized_new_frame)
+        video_out.write(resized_new_frame)
 
     video_in.release()
     video_out.release()
 
 if __name__ == "__main__":
-    test1()
+    # test1()
+    test2()

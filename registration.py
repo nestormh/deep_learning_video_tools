@@ -2,7 +2,7 @@ import tools
 import cv2
 import numpy as np
 import random
-import time
+from inpainting import GenerativeInpainting
 from timeit import default_timer as timer
 
 class ImageItem:
@@ -66,9 +66,17 @@ class ImageRegistration:
         if len(good) > self.config.min_match_count:
             src_pts = np.float32([lastItem.keypoints[m.queryIdx].pt for m in good]).reshape(-1, 1, 2)
             dst_pts = np.float32([item.keypoints[m.trainIdx].pt for m in good]).reshape(-1, 1, 2)
+        else:
+            item.warped.image = None
+            item.warped.mask = None
+            return
 
         if len(src_pts) > self.config.min_match_count:
             item.homography, mask_pairs = cv2.findHomography(dst_pts, src_pts, cv2.RANSAC)
+        else:
+            item.warped.image = None
+            item.warped.mask = None
+            return
 
         item.warped.image = cv2.warpPerspective(src=item.image,
                                                 M=item.homography,
@@ -79,18 +87,35 @@ class ImageRegistration:
                                                dsize=(width, height),
                                                flags=cv2.INTER_CUBIC)
 
-    def fillImages(self, item, lastItem):
+    def warpInpaintedImage(self, item, width, height):
+        item.warped.inpainted = cv2.warpPerspective(src=item.inpainted,
+                                                    M=item.homography,
+                                                    dsize=(width, height),
+                                                    flags=cv2.INTER_CUBIC)
+
+    def fillImagesRegistration(self, item, lastItem):
+        if not isinstance(lastItem.mask, np.ndarray):
+            return
+
+        if not isinstance(lastItem.used_mask, np.ndarray):
+            lastItem.used_mask = np.zeros(item.mask.shape, np.uint8)
+
         orig_mask = lastItem.mask - item.warped.mask
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (config.erode_filled_image_by_px, config.erode_filled_image_by_px))
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT,
+                                           (self.config.erode_filled_image_by_px, self.config.erode_filled_image_by_px))
         mask = cv2.erode(orig_mask, kernel, iterations=1)
         ret, mask = cv2.threshold(mask, 1, 255, cv2.THRESH_BINARY)
         mask = cv2.bitwise_and(mask, lastItem.mask)
         # We don't want to use again data we already have
         mask = cv2.bitwise_and(mask, cv2.bitwise_not(lastItem.used_mask))
 
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (config.dilate_inpainting_mask_by_px, config.dilate_inpainting_mask_by_px))
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT,
+                                           (self.config.dilate_inpainting_mask_by_px, self.config.dilate_inpainting_mask_by_px))
         inpaint_mask = cv2.erode(mask, kernel, cv2.BORDER_CONSTANT, iterations=1)
-        lastItem.inpaint_mask = cv2.bitwise_or(lastItem.inpaint_mask, inpaint_mask)
+        if isinstance(lastItem.inpaint_mask, np.ndarray):
+            lastItem.inpaint_mask = cv2.bitwise_or(lastItem.inpaint_mask, inpaint_mask)
+        else:
+            lastItem.inpaint_mask = inpaint_mask
 
         warped = cv2.bitwise_and(item.warped.image, mask)
         neg = cv2.bitwise_and(lastItem.final_image, cv2.bitwise_not(mask))
@@ -100,70 +125,69 @@ class ImageRegistration:
         colormask[:, :] = (random.randint(128, 255), random.randint(128, 255), random.randint(128, 255))
         lastItem.used_mask += mask
 
+    # It looks similar to fillImagesRegistration, but it comes with minor but relevant differences.
+    # In another function for clarity
+    def fillImagesInpainting(self, item, lastItem):
+        orig_mask = item.inpaint_mask - lastItem.used_mask
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT,
+                                           (self.config.erode_filled_image_by_px, self.config.erode_filled_image_by_px))
+        mask = cv2.erode(orig_mask, kernel, iterations=1)
+        ret, mask = cv2.threshold(mask, 1, 255, cv2.THRESH_BINARY)
+        mask = cv2.bitwise_and(mask, lastItem.mask)
+        # We don't want to use again data we already have
+        mask = cv2.bitwise_and(mask, cv2.bitwise_not(lastItem.used_mask))
+
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT,
+                                           (self.config.dilate_inpainting_mask_by_px, self.config.dilate_inpainting_mask_by_px))
+        inpaint_mask = cv2.erode(mask, kernel, cv2.BORDER_CONSTANT, iterations=1)
+        lastItem.inpaint_mask = cv2.bitwise_and(lastItem.inpaint_mask, cv2.bitwise_not(inpaint_mask))
+
+        warped = cv2.bitwise_and(item.warped.inpainted, mask)
+        neg = cv2.bitwise_and(lastItem.final_image, cv2.bitwise_not(mask))
+        lastItem.final_image = cv2.max(neg, warped)
+
+        colormask = np.zeros(lastItem.image.shape, np.uint8)
+        colormask[:, :] = (random.randint(128, 255), random.randint(128, 255), random.randint(128, 255))
+        lastItem.used_mask += mask
+
     def fillFrame(self, lastItem):
         start_time = timer()
-        print("COMPUTING...")
         self.initializeLastItem(lastItem)
 
         step = self.config.registration_step
         if len(self.buffer) / step < self.config.min_images_to_process:
             step = max(int(len(self.buffer) / self.config.min_images_to_process), 1)
 
+        # First, we want to fill the image with the real information in previous images,
+        # so we don't need to "imagine" the content.
         for idx in range(len(self.buffer) - 1, 0, -step):
-            print(f"idx: {idx}")
-
             item = self.buffer[idx]
             item.warped = ImageItem()
             height, width = item.image.shape[:-1]
 
+            # Step 1. Images and masks are registered
             self.warpImages(item, lastItem, width, height)
 
-            self.fillImages(item, lastItem)
+            # Step 2. Derivated masks are created and content is filled
+            self.fillImagesRegistration(item, lastItem)
 
         lastItem.inpaint_mask = cv2.bitwise_not(lastItem.inpaint_mask)
 
         # Repeat the process, this time using older inpainted images for keeping as much consistency as possible
-
+        # The idea is using the previously "imagined" information, so there is coherence between frames.
         for idx in range(len(self.buffer) - 1, 0, -step):
-            print(f"idx: {idx}")
             item = self.buffer[idx]
-
             height, width = item.image.shape[:-1]
 
-            item.warped.inpainted = cv2.warpPerspective(src=item.inpainted,
-                                                    M=item.homography,
-                                                    dsize=(width, height),
-                                                    flags=cv2.INTER_CUBIC)
+            # Step 1. Inpainted image is also warped
+            self.warpInpaintedImage(item, width, height)
 
-            orig_mask = item.inpaint_mask - lastItem.used_mask
-            kernel = cv2.getStructuringElement(cv2.MORPH_RECT,
-                                               (config.erode_filled_image_by_px, config.erode_filled_image_by_px))
-            mask = cv2.erode(orig_mask, kernel, iterations=1)
-            ret, mask = cv2.threshold(mask, 1, 255, cv2.THRESH_BINARY)
-            mask = cv2.bitwise_and(mask, lastItem.mask)
-            # We don't want to use again data we already have
-            mask = cv2.bitwise_and(mask, cv2.bitwise_not(lastItem.used_mask))
-
-            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (
-            config.dilate_inpainting_mask_by_px, config.dilate_inpainting_mask_by_px))
-            inpaint_mask = cv2.erode(mask, kernel, cv2.BORDER_CONSTANT, iterations=1)
-            lastItem.inpaint_mask = cv2.bitwise_and(lastItem.inpaint_mask, cv2.bitwise_not(inpaint_mask))
-
-            warped = cv2.bitwise_and(item.warped.inpainted, mask)
-            neg = cv2.bitwise_and(lastItem.final_image, cv2.bitwise_not(mask))
-            lastItem.final_image = cv2.max(neg, warped)
-
-            colormask = np.zeros(lastItem.image.shape, np.uint8)
-            colormask[:, :] = (random.randint(128, 255), random.randint(128, 255), random.randint(128, 255))
-            lastItem.used_mask += mask
-
-        # TODO: Inpainting is external?
-        # return lastItem.final_image
+            # Step 2. Derivated masks are created and content is filled
+            self.fillImagesInpainting(item, lastItem)
 
         print(f"Registration time: {timer() - start_time}")
 
         lastItem.inpainted = self.inpainting.inpaint_image(lastItem.final_image, lastItem.inpaint_mask)
-
 
         return lastItem.inpainted
 
@@ -182,96 +206,7 @@ class ImageRegistration:
 
         print(f"{len(self.buffer)} elements in buffer")
 
-        # return imageFilled, mask
-
         return return_img
 
     def updateInpainted(self, inpainted):
         self.buffer[0].inpainted = inpainted
-
-if __name__ == "__main__":
-    import neuralgym.neuralgym as ng
-    from inpainting import GenerativeInpainting
-    from segmentation import DeepLabSegmentation
-    import labels
-
-    # config_file = "config/config.yml"
-    # config = ng.Config(config_file)
-
-    # registration = ImageRegistration(config)
-
-    # for count in range(15):
-    #     resized_image = cv2.imread(f"data/buffer/image_{count}.png")
-    #     mask = cv2.imread(f"data/buffer/mask_{count}.png")
-    #     bg_mask = cv2.imread(f"data/buffer/bg_mask_{count}.png")
-    #     # new_frame = cv2.imread(f"data/buffer/inpainting_{count}.png")
-    #
-    #     registration.updateBuffer(resized_image, mask, bg_mask)
-
-    # TODO: Pass as parameter
-    config_file = "config/config.yml"
-    config = ng.Config(config_file)
-
-    segmentation = DeepLabSegmentation(config)
-    registration = ImageRegistration(config)
-    inpainting = GenerativeInpainting(config)
-
-    video_in = cv2.VideoCapture(f'data/people_walking.mp4')
-
-    frame_width = int(video_in.get(cv2.CAP_PROP_FRAME_WIDTH))
-    frame_height = int(video_in.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    fps = int(video_in.get(cv2.CAP_PROP_FPS))
-
-    video_out = None
-
-    count = 0
-    while (video_in.isOpened()):
-        ret, frame = video_in.read()
-
-        print(f"Processing frame: {count}")
-
-        # if count % 10 != 0:
-        #     count += 1
-        #     continue
-        # count += 1
-
-
-        resized_image, seg_map = segmentation.run(frame)
-        mask = labels.mask_from_labels(seg_map, config.classes_to_remove)
-        bg_mask = labels.mask_from_labels(seg_map, config.background_classes)
-
-        if config.dilate_mask.apply:
-            if config.dilate_mask.type == "ellipse":
-                kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE,
-                                                   (config.dilate_mask.kernel_size, config.dilate_mask.kernel_size))
-                mask = cv2.dilate(mask, kernel, iterations=1)
-            elif config.dilate_mask.type == "rect":
-                kernel = cv2.getStructuringElement(cv2.MORPH_RECT,
-                                                   (config.dilate_mask.kernel_size, config.dilate_mask.kernel_size))
-                mask = cv2.dilate(mask, kernel, iterations=1)
-            elif config.dilate_mask.type == "cross":
-                kernel = cv2.getStructuringElement(cv2.MORPH_CROSS,
-                                                   (config.dilate_mask.kernel_size, config.dilate_mask.kernel_size))
-                mask = cv2.dilate(mask, kernel, iterations=1)
-            else:
-                raise Exception("Unsupported dilation type. Exiting...")
-
-        new_frame = registration.updateBuffer(resized_image, mask, bg_mask)
-        resized_new_frame = cv2.resize(new_frame, (frame_width, frame_height), interpolation=cv2.INTER_CUBIC)
-
-        # if count == 2:
-        #     break
-
-        if not video_out:
-            # Define the codec and create VideoWriter object
-            fourcc = cv2.VideoWriter_fourcc(*'MJPG')
-            video_out = cv2.VideoWriter(f'data/wo_people_walking_registration_fixed.avi', fourcc, fps, (frame_width, frame_height))
-
-        video_out.write(resized_new_frame)
-
-        # TODO: Remove.
-        time.sleep(0.1)
-
-    video_in.release()
-    video_out.release()
-
