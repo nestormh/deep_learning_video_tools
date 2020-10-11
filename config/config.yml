@@ -58,11 +58,11 @@ background_classes: [
 ]
 
 # =========================== Registration Settings ===========================
-max_images_in_buffer: 750
+max_images_in_buffer: 50 #750
 num_features: 5000
 
 erode_filled_image_by_px: 3
-dilate_inpainting_mask_by_px: 3
+dilate_inpainting_mask_by_px: 1 # 3
 
 # =========================== Inpainting Settings ===========================
 # Model settings
